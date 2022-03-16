@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Feature Hidden Field Updater</title>
+    <!--  (c) 2015 Rally Software Development Corp.  All Rights Reserved. -->
+    <!--  Build Date: Mon Nov 30 2015 17:05:26 GMT-0700 (MST) -->
+    
+    <script type="text/javascript">
+        var APP_BUILD_DATE = "Mon Nov 30 2015 17:05:26 GMT-0700 (MST)";
+        var CHECKSUM = 49440542188;
+    </script>
+    
+    <script type="text/javascript" src="/apps/2.0/sdk.js"></script>
+
+    <script type="text/javascript">
+        Rally.onReady(function() {
+             
+/**
+ * A link that pops up a version dialog box
+ */
+
+Ext.define('Rally.technicalservices.InfoLink',{
+    extend: 'Rally.ui.dialog.Dialog',
+    alias: 'widget.tsinfolink',
+    
+    /**
+     * @cfg {String} informationHtml
+     * Additional text to be displayed on the popup dialog (for exmaple,
+     * to add a description of the app's use or functionality)
+     */
+    informationHtml: null,
+    
+    /**
+     * 
+     * cfg {String} title
+     * The title for the dialog box
+     */
+    title: "Build Information",
+    
+    defaults: { padding: 5, margin: 5 },
+
+    closable: true,
+     
+    draggable: true,
+
+    autoShow: true,
+   
+    width: 350, 
+    
+    initComponent: function() {
+        var id = Ext.id(this);
+        this.title =  "<span class='icon-help'> </span>" + this.title;
+        this.callParent(arguments);
+    },
+    
+    _generateChecksum: function(string){
+        var chk = 0x12345678,
+            i;
+        string = string.replace(/var CHECKSUM = .*;/,"");
+        string = string.replace(/\s/g,"");  //Remove all whitespace from the string.
+        
+        for (i = 0; i < string.length; i++) {
+            chk += (string.charCodeAt(i) * i);
+        }
+    
+        return chk;
+    },
+    
+    _checkChecksum: function(container) {
+        var deferred = Ext.create('Deft.Deferred');
+        console.log("_checkChecksum", container);
+        var me = this;
+        
+        Ext.Ajax.request({
+            url: document.URL,
+            params: {
+                id: 1
+            },
+            success: function (response) {
+                text = response.responseText;
+                if ( CHECKSUM ) {
+                    if ( CHECKSUM !== me._generateChecksum(text) ) {
+                        console.log("Checksums don't match!");
+                        deferred.resolve(false);
+                        return;
+                    }
+                }
+                deferred.resolve(true);
+            }
+        });
+        
+        return deferred.promise;
+    },
+    
+    afterRender: function() {
+        var app = Rally.getApp();
+        
+        if (! app.isExternal() ) {
+                
+            this._checkChecksum(app).then({
+                scope: this,
+                success: function(result){
+                    if ( !result ) {
+                        this.addDocked({
+                            xtype:'container',
+                            cls: 'build-info',
+                            padding: 2,
+                            html:'<span class="icon-warning"> </span>Checksums do not match'
+                        });
+                    }
+                },
+                failure: function(msg){
+                    console.log("oops:",msg);
+                }
+            });
+        } else {
+            this.addDocked({
+                xtype:'container',
+                cls: 'build-info',
+                padding: 2,
+                html:'... Running externally'
+            });
+        }
+        this.callParent(arguments);
+    },
+    
+    beforeRender: function() {
+        var me = this;
+        this.callParent(arguments);
+
+        if (this.informationHtml) {
+            this.addDocked({
+                xtype: 'component',
+                componentCls: 'intro-panel',
+                padding: 2,
+                html: this.informationHtml
+            });
+        }
+        
+        this.addDocked({
+            xtype:'container',
+            cls: 'build-info',
+            padding: 2,
+            html:"This app was created by the Rally Technical Services Team."
+        });
+        
+        if ( APP_BUILD_DATE ) {
+            this.addDocked({
+                xtype:'container',
+                cls: 'build-info',
+                padding: 2,
+                html:'Build date/time: ' + APP_BUILD_DATE
+            });
+        }
+    }
+});
+
+/*
+ */
+Ext.define('Rally.technicalservices.Logger',{
+    constructor: function(config){
+        Ext.apply(this,config);
+    },
+    log: function(args){
+        var timestamp = "[ " + Ext.util.Format.date(new Date(), "Y-m-d H:i:s.u") + " ]";
+        //var output_args = arguments;
+        //output_args.unshift( [ "[ " + timestamp + " ]" ] );
+        //output_args = Ext.Array.push(output_args,arguments);
+        
+        var output_args = [];
+        output_args = Ext.Array.push(output_args,[timestamp]);
+        output_args = Ext.Array.push(output_args, Ext.Array.slice(arguments,0));
+
+        window.console && console.log.apply(console,output_args);
+    }
+
+});
+
+Ext.define("feature-hidden-field-updater", {
+    extend: 'Rally.app.App',
+    componentCls: 'app',
+    logger: new Rally.technicalservices.Logger(),
+    defaults: { margin: 10 },
+    config: {
+        defaultSettings: {
+            hiddenStartDateField: '',
+            stateDateFields: {}
+        }
+    },
+    items: [
+        {xtype:'container',itemId:'selector_box', layout: {type: 'hbox'}},
+        {xtype:'container',itemId:'display_box'}
+    ],
+    featureFetch: ['ObjectID','FormattedID','Name'],
+    portfolioItemModelName: 'PortfolioItem/Feature',
+    portfolioItemModel: null,
+    portfolioItemStates: undefined,
+
+    launch: function() {
+        this._fetchLowestPortfolioItemModel().then({
+            scope: this,
+            success: function(modelName){
+                this.portfolioItemModelName = modelName;
+                Rally.data.ModelFactory.getModel({
+                    type: modelName,
+                    success: function(model) {
+                        this.portfolioItemModel = model;
+                        this._fetchStates(model).then({
+                            success: function(states){
+                                this.portfolioItemStates = states;
+                                this._addReleaseSelector();
+                            },
+                            failure: function(msg){
+                                Rally.ui.notify.Notifier.showError({message: "Failed to retrieve Portfolio Item States: " + msg});
+                            },
+                            scope: this
+
+                        });
+                    },
+                    failure: function(){
+                        Rally.ui.notify.Notifier.showError({message: "Failed to retrieve model: " + modelName});
+                    },
+                    scope: this
+                });
+            },
+            failure: function(msg){
+                Rally.ui.notify.Notifier.showError({message: "Failed to fetch Portfolio Item Types: " + msg});
+            }
+        });
+
+    },
+    _fetchStates: function(model){
+        var deferred = Ext.create('Deft.Deferred');
+        model.getField('State').getAllowedValueStore().load({
+            callback: function(records, operation, success) {
+                if (operation.wasSuccessful()){
+                    deferred.resolve(records);
+                } else {
+                    deferred.reject(operation && operation.error && operation.error.errors.join(','));
+                }
+            }
+        });
+        return deferred;
+    },
+    _validateSettings: function(){
+        this.logger.log('_validateSettings', this.getHiddenStartDateField(), this.getStateDateFieldMapping());
+
+        if (Ext.Object.isEmpty(this.getStateDateFieldMapping()) && this.getHiddenStartDateField().length === 0){
+            return false;
+        }
+        return true;
+    },
+    _addReleaseSelector: function(){
+
+        if (!this._validateSettings()){
+            this.down('#selector_box').add({
+                xtype: 'container',
+                html: "Please use the app settings to configure a Start Date field and/or State Field Mappings."
+            });
+            return;
+        }
+
+        this.down('#selector_box').removeAll();
+        this.down('#selector_box').add({
+            xtype: 'rallyreleasecombobox',
+            fieldLabel: 'Release',
+            labelAlign: 'right',
+            width: 500,
+            multiSelect: true,
+            valueField: 'Name',
+            listeners: {
+                change: this._updateGrid,
+                scope: this
+            }
+        });
+    },
+    _fetchLowestPortfolioItemModel: function(){
+        var deferred = Ext.create('Deft.Deferred');
+
+        Ext.create('Rally.data.wsapi.Store',{
+            model: 'TypeDefinition',
+            fetch: ['TypePath'],
+            autoLoad: true,
+            filters: [{
+                property: 'TypePath',
+                operator: 'contains',
+                value: 'PortfolioItem/'
+            },{
+                property: 'Ordinal',
+                value: 0
+            }]
+        }).load({
+            callback: function(records, operation){
+                if (operation.wasSuccessful()){
+                    deferred.resolve(records[0].get('TypePath'));
+                } else {
+                    deferred.reject(operation.error.errors.join(','));
+                }
+            }
+        });
+        return deferred;
+    },
+    _getReleaseFilters: function(){
+        var cb = this.down('rallyreleasecombobox');
+
+        return Rally.data.wsapi.Filter.or(_.map(cb.getValue(), function(releaseName){ return {property: 'Release.Name', value: releaseName}; }));
+    },
+    _getFetchFields: function(){
+        var fetchFields = Ext.Array.merge(this.featureFetch, this.selectedColumns || []);
+        return fetchFields.concat([this.getHiddenStartDateField()]).concat(_.values(this.getStateDateFieldMapping()));
+    },
+    _updateGrid: function(){
+        var cb = this.down('rallyreleasecombobox');
+        this.logger.log('_updateGrid', cb.getValue(),_.values(this.getStateDateFieldMapping()));
+
+        var filters = this._getReleaseFilters(),
+            fields = this._getFetchFields();
+
+        this.logger.log('fetch', fields);
+        var store = Ext.create('Rally.data.wsapi.Store', {
+            model: this.portfolioItemModelName,
+            fetch: fields,
+            filters: filters
+        });
+        this._createFeatureGrid(store);
+    },
+    getHiddenStartDateField: function(){
+        return this.getSetting('hiddenStartDateField');
+    },
+    getStateDateFieldMapping: function(){
+        var setting = this.getSetting('stateDateFields');
+        if (Ext.isString(setting)){
+            setting = Ext.JSON.decode(setting);
+        }
+        return setting || {};
+    },
+    getFieldDisplayName: function(f){
+        return (this.portfolioItemModel.getField(f) && this.portfolioItemModel.getField(f).displayName) || f;
+    },
+    _getBulkConfigItems: function(){
+        var items = [];
+
+        if (this.getHiddenStartDateField()){
+            items.push({
+                xtype: 'rallyrecordmenuitembulksethiddendate' ,
+                dateField: this.portfolioItemModel.getField(this.getHiddenStartDateField())
+            });
+        }
+
+        if (!Ext.Object.isEmpty(this.getStateDateFieldMapping())){
+            items.push({
+                xtype: 'rallyrecordmenuitembulkupdatetransitiondates',
+                stateDateFields: this.getStateDateFieldMapping(),
+                states: this.portfolioItemStates
+            });
+        }
+        return items;
+    },
+    _createFeatureGrid: function(store){
+        this.down('#display_box').removeAll();
+
+        var bulkConfigItems = this._getBulkConfigItems();
+
+        var grid = this.down('#display_box').add({
+            xtype: 'rallygrid',
+            store: store,
+            columnCfgs: this._getColumnCfgs(),
+            enableBulkEdit: true,
+            bulkEditConfig: {
+                items: bulkConfigItems
+            },
+            listeners: {
+                fieldsupdated: this._updateColumnCfgs,
+                scope: this
+            },
+            plugins: [{
+                ptype: 'tsgridfieldpicker',
+                models: [this.portfolioItemModel],
+                headerContainer: this.down('#selector_box'),
+                context: this.getContext()
+            },{
+                ptype: 'tsgridcustomfiltercontrol',
+                headerContainer: this.down('#selector_box'),
+                modelNames: [this.portfolioItemModelName],
+                permanentFilters: this._getReleaseFilters()
+            }]
+        });
+
+    },
+    _getHiddenFields: function(){
+        var hiddenFields = [];
+
+        if (this.getHiddenStartDateField()){
+            hiddenFields.push(this.getHiddenStartDateField());
+        }
+        _.each(this.getStateDateFieldMapping(), function(field, state){
+            hiddenFields.push(field);
+        });
+        return hiddenFields;
+    },
+    _updateColumnCfgs: function(newFields){
+        this.selectedColumns = newFields;
+        this._updateGrid();
+    },
+    _getColumnCfgs: function(){
+        var cols = [],
+            hiddenFields = this._getHiddenFields(),
+            fields = this._getFetchFields();
+
+         _.each(fields, function(f){
+             if (f != 'ObjectID'){
+                 var col = { dataIndex: f, text: this.getFieldDisplayName(f), align: 'left' };
+                 if (Ext.Array.contains(hiddenFields, f)){
+                     col.dataIndex = 'ObjectID';
+                     col.renderer = function(v,m,r){
+                         return Rally.util.DateTime.formatWithDefault(r.get(f));
+                     }
+                 }
+                 cols.push(col);
+             }
+            }, this);
+        return cols;
+
+    },
+    getSettingsFields: function(){
+        return Rally.technicalservices.Settings.getFields(this.portfolioItemModelName, this.portfolioItemStates);
+    },
+    getOptions: function() {
+        return [
+            {
+                text: 'About...',
+                handler: this._launchInfo,
+                scope: this
+            }
+        ];
+    },
+    _launchInfo: function() {
+        if ( this.about_dialog ) { this.about_dialog.destroy(); }
+        this.about_dialog = Ext.create('Rally.technicalservices.InfoLink',{});
+    },
+    
+    isExternal: function(){
+        return typeof(this.getAppId()) == 'undefined';
+    },
+    
+    //onSettingsUpdate:  Override
+    onSettingsUpdate: function (settings){
+        this.logger.log('onSettingsUpdate',settings);
+        Ext.apply(this, settings);
+        this._addReleaseSelector();
+    }
+});
+
+(function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * @private
+     * Mixin to show or hide a control widget based on the toggle state of a GridBoard.
+     */
+    Ext.define('Rally.technicalservices.GridControlShowable', {
+        /**
+         * @cfg {String}
+         * header position to add control to (left|right)
+         */
+        headerPosition: 'left',
+
+        /**
+         * Override to configure control component to add to GridBoard.
+         *
+         * @template
+         * @return {Object|Ext.Component|false} return component config or component to add to control header or return false to add nothing.
+         */
+        getControlCmpConfig: function() {
+            return false;
+        },
+
+        /**
+         * Override to configure where the control component should be inserted in the control header
+         *
+         * @template
+         * @return {Number|false} return insert position of control component or return false to add control in order.
+         */
+        getControlInsertPosition: function() {
+            return false;
+        },
+
+        /**
+         * Returns the control component;
+         *
+         * @returns {Ext.Component}
+         */
+        getControlCmp: function() {
+            return this.controlCmp;
+        },
+
+        /**
+         * Initializes and shows the control component in the header.
+         */
+        showControl: function() {
+            if (!this.controlCmp) {
+                this._createControlCmp();
+            }
+
+            if (this.controlCmp) {
+                this.controlCmp.show();
+            }
+
+            return this.controlCmp;
+        },
+
+        _getControlCt: function() {
+            return this.headerContainer;
+        },
+
+        _createControlCmp: function() {
+            var controlCmpConfig = this.getControlCmpConfig();
+
+            if (controlCmpConfig) {
+                if (!Ext.isFunction(controlCmpConfig.hide)) {
+                    controlCmpConfig.hidden = true;
+                    controlCmpConfig.style = Ext.merge({'float': this.headerPosition}, controlCmpConfig.style);
+                }
+
+                if (this._getControlCt().down(controlCmpConfig.xtype)){
+                    this._getControlCt().down(controlCmpConfig.xtype).destroy();
+                }
+                this.controlCmp = this._getControlCt().add(controlCmpConfig);
+
+            }
+        }
+    });
+})();
+(function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * Adds a Rally.ui.filter.CustomFilterControl component to a Rally.ui.gridboard.GridBoard.
+     *
+     * A full example of using this plugin is available in the [Examples](#!/example/filterable-grid-board) section.
+     */
+    Ext.define('Rally.technicalservices.GridCustomFilterControl', {
+        alias: 'plugin.tsgridcustomfiltercontrol',
+        extend:'Ext.AbstractPlugin',
+        mixins: ['Rally.technicalservices.GridControlShowable'],
+        requires: [
+            'Rally.ui.filter.view.CustomFilterButton',
+            'Rally.data.wsapi.filter.FilterModificationator',
+            'Rally.ui.filter.view.OwnerFilter',
+            'Rally.data.ModelTypes'
+        ],
+        headerPosition: 'left',
+
+        /**
+         * @cfg {Object}
+         * Config for Rally.ui.filter.view.CustomFilterButton.
+         */
+        filterControlConfig: {},
+
+        /**
+         * @cfg {Boolean}
+         * Whether owner filter should apply to children items
+         */
+        filterChildren: true,
+
+        /**
+         * @cfg {Boolean}
+         * Whether to show the additional owner quick filter
+         */
+        showOwnerFilter: false,
+
+        /**
+         * @cfg {Object}
+         * Additional configuration passed to the owner filter
+         */
+        ownerFilterControlConfig: {},
+
+        containerConfig: {},
+
+        init: function(cmp) {
+            this.callParent(arguments);
+            this.cmp = cmp;
+            this.cmp.useFilterCollection = false;
+
+            var control = this.showControl();
+
+            this.filterButton = control.down('rallycustomfilterbutton');
+            this.ownerFilter = control.down('rallyusersearchcombobox');
+
+            this._onTypeChange(cmp, this.modelNames);
+        },
+
+        getControlCmpConfig: function() {
+            var config = Ext.merge({
+                xtype: 'container',
+                width: 72,
+                layout: 'hbox',
+                items: [
+                    Ext.merge({
+                        xtype: 'rallycustomfilterbutton',
+                        context: this.context,
+                        listeners: {
+                            customfilter: {
+                                fn: this._onFilterButtonStateAvailable,
+                                single: true,
+                                scope: this
+                            }
+                        },
+                        toolTipConfig: {
+                            html: 'Filter',
+                            anchor: 'top',
+                            mouseOffset: [-9, -2]
+                        },
+                        margin: '3 9 3 30'
+                    }, this.filterControlConfig)
+                ]
+            }, this.containerConfig);
+
+            if (this.showOwnerFilter) {
+                config.width += 210;
+
+                config.items.push(Ext.merge({
+                    xtype: 'rallyownerfilter',
+                    margin: '3px 10px 0px 0px',
+                    listConfig: {
+                        width: 200
+                    },
+                    context: this.context,
+                    width: 200,
+                    clearFilterText: '-- Clear Filter --',
+                    listeners: {
+                        initalvalueset: {
+                            fn: this._onOwnerFilterStateAvailable,
+                            single: true
+                        },
+                        select: this._applyFilter,
+                        scope: this
+                    }
+                }, this.ownerFilterControlConfig));
+            }
+
+            return config;
+        },
+
+        _onFilterButtonStateAvailable: function() {
+            this._filterButtonStateAvailable = true;
+            this.filterButton.on('customfilter', this._applyFilter, this);
+            if(!this.showOwnerFilter || this._ownerFilterStateAvailable) {
+                this._applyFilter();
+            }
+        },
+
+        _onOwnerFilterStateAvailable: function() {
+            this._ownerFilterStateAvailable = true;
+            if(this._filterButtonStateAvailable) {
+                this._applyFilter();
+            }
+        },
+
+        _onTypeChange: function(cmp, types) {
+            var modelNames = _.map(types, function (type) {
+                return type.isModel ? type.get('TypePath') : type;
+            });
+            var typeNames = this._getTypesByNames(modelNames);
+
+            this.filterButton.setModelNames(modelNames);
+            this.filterButton.setTypes(typeNames);
+            this.filterButton.setFilters([]);
+            this.filterButton.indicateNoActiveFilterPresent();
+            this.filterButton.saveState();
+        },
+
+        _applyFilter: function() {
+
+              var filters = _.compact(Ext.Array.merge(this.filterButton.getFilters(), this.ownerFilter && this.ownerFilter.getFilter())),
+                modifiedFilters = Rally.data.wsapi.filter.FilterModificationator.modifyFilters(filters, this.filterChildren),
+                filterArgs = {
+                    types: this.filterButton.getTypes(),
+                    filters: modifiedFilters
+                };
+            this._applyFilters(filterArgs);
+        },
+        _applyFilters: function(filterObj){
+
+            var permanentFilters = this.permanentFilters || [];
+
+            var extraFilters = filterObj.filters || [];
+
+            this.cmp.store.clearFilter(true);
+            var filters =  _.compact(Ext.Array.merge(
+                        permanentFilters,
+                        extraFilters));
+
+            this.cmp.store.filter(filters);
+        },
+        _getTypesByNames: function(modelNames) {
+            return _.map(modelNames, function (modelName) {
+                return Rally.data.ModelTypes.getTypeByName(modelName).toLowerCase();
+            }, this);
+        }
+    });
+})();
+(function () {
+    var Ext = window.Ext4 || window.Ext;
+
+    /**
+     * Adds the FieldPicker component to a GridBoard.
+     *
+     * A full example of using this plugin is available in the [Examples](#!/example/customizable-columns-grid-board) section.
+     */
+    Ext.define('Rally.technicalservices.plugin.GridFieldPicker', {
+        alias: 'plugin.tsgridfieldpicker',
+        extend:'Ext.AbstractPlugin',
+        mixins: ['Rally.technicalservices.GridControlShowable'],
+        requires: [
+            'Rally.ui.popover.Popover',
+            'Rally.ui.Button',
+            'Rally.ui.picker.FieldPicker'
+        ],
+
+        /**
+         * @cfg {String[]} alwaysSelectedFields
+         * The fields that will be always selected in the field picker for the grid view
+         */
+        gridAlwaysSelectedValues: ['FormattedID', 'Name'], // DragAndDropRank gets added in init if Drag and Drop is enabled for the workspace in the component's context
+
+        /**
+         * @cfg {String[]} gridFieldBlackList
+         * The fields that will be blacklisted in grid mode
+         */
+        gridFieldBlackList: [
+            'Actuals',
+            'Changesets',
+            'Children',
+            'Description',
+            'Notes',
+            'ObjectID',
+            'Predecessors',
+            'RevisionHistory',
+            'Subscription',
+            'Successors',
+            'TaskIndex',
+            'Workspace',
+            'VersionId'
+        ],
+
+         /**
+         * @cfg {String[]}
+         * the names of the models displayed on the board.
+         */
+        modelNames: [],
+
+        stateful: true,
+
+        margin: '3 9 0 0',
+
+        constructor: function (config) {
+            config.gridFieldBlackList = _.union(this.gridFieldBlackList, config.gridFieldBlackList);
+            config.gridAlwaysSelectedValues = _.union(this.gridAlwaysSelectedValues, config.gridAlwaysSelectedValues);
+            this.callParent(arguments);
+        },
+
+        init: function(cmp) {
+            this.callParent(arguments);
+            this.cmp = cmp;
+
+            var rankingEnabled = false; //this.context.getWorkspace().WorkspaceConfiguration.DragDropRankingEnabled && cmp.gridConfig.enableRanking !== false;
+
+            this.gridAlwaysSelectedValues = this._modifyFieldCollection(this.gridAlwaysSelectedValues, ['DragAndDropRank'], rankingEnabled);
+            this.gridFieldBlackList = this._modifyFieldCollection(this.gridFieldBlackList, ['DragAndDropRank'], !rankingEnabled);
+            this.stateId = this.stateId || this.context.getScopedStateId('shownfields');
+
+            var state = Ext.state.Manager.get(this.stateId);
+            this._fields = state && state.fields || this.boardFieldDefaults;
+
+            this.showControl();
+        },
+
+        _modifyFieldCollection: function (collection, fields, include) {
+            if (include) {
+                return _.union(collection, fields);
+            }
+            return _.reject(collection, function (field) { return _.contains(fields, field); });
+        },
+
+        getControlCmpConfig: function() {
+            return {
+                xtype: "rallybutton",
+                itemId: 'fieldpickerbtn',
+                cls: 'field-picker-btn secondary rly-small',
+                margin: this.margin,
+                iconCls: 'icon-add-column',
+                toolTipConfig: {
+                    html: this.getTitle(),
+                    anchor: 'top'
+                },
+                listeners: {
+                    click: this._onClick,
+                    scope: this
+                }
+            };
+        },
+
+        _onClick: function(btn) {
+            this._createPopover(btn.getEl());
+        },
+
+        _getPickerConfig: function() {
+            var pickerConfig = _.extend({
+                value: _.pluck(this.cmp.columns, 'dataIndex').join(','),
+                fieldBlackList: this.gridFieldBlackList,
+                alwaysSelectedValues: this.gridAlwaysSelectedValues
+            }, this.fieldPickerConfig);
+
+            return pickerConfig;
+        },
+
+        _createPopover: function(popoverTarget) {
+            this.popover = Ext.create('Rally.ui.popover.Popover', {
+                target: popoverTarget,
+                placement: ['bottom', 'left', 'top', 'right'],
+                cls: 'field-picker-popover',
+                toFront: Ext.emptyFn,
+                buttonAlign: 'center',
+                title: this.getTitle(),
+                listeners: {
+                    destroy: function () {
+                        this.popover = null;
+                    },
+                    scope: this
+                },
+                buttons: [
+                    {
+                        xtype: "rallybutton",
+                        text: 'Apply',
+                        cls: 'field-picker-apply-btn primary rly-small',
+                        listeners: {
+                            click: function() {
+                                this._onApply(this.popover);
+                            },
+                            scope: this
+                        }
+                    },
+                    {
+                        xtype: "rallybutton",
+                        text: 'Cancel',
+                        cls: 'field-picker-cancel-btn secondary dark rly-small',
+                        listeners: {
+                            click: function() {
+                                this.popover.close();
+                            },
+                            scope: this
+                        }
+                    }
+                ],
+                items: [
+                    _.extend({
+                        xtype: 'rallyfieldpicker',
+                        cls: 'field-picker',
+                        itemId: 'fieldpicker',
+                        modelTypes: this._getModelTypes(),
+                        alwaysExpanded: true,
+                        width: 200,
+                        placeholderText: 'Search',
+                        selectedTextLabel: 'Selected',
+                        availableTextLabel: 'Available',
+                        listeners: {
+                            specialkey: function(field, e) {
+                                if (e.getKey() === e.ESC) {
+                                    this.popover.close();
+                                }
+                            },
+                            scope: this
+                        }
+                    }, this._getPickerConfig())
+                ]
+            });
+        },
+
+        _getModelTypes: function() {
+            var models = this._getModels();
+            return _.pluck(models, 'typePath');
+        },
+
+        _getModels: function() {
+
+            return _.reduce(this.models, function(accum, model) {
+                if (model.typePath === 'artifact') {
+                    accum = accum.concat(model.getArtifactComponentModels());
+                } else {
+                    accum.push(model);
+                }
+                return accum;
+            }, []);
+        },
+
+        getTitle: function () {
+            return 'Show Columns';
+        },
+
+        /**
+         * Update the fields displayed. In grid mode this will be the columns displayed. In board mode it will be
+         * the fields on the cards
+         *
+         * @param {String[]|Object[]} fields A list of field names to display
+         * @param {Boolean} true to suspend store load if it will be triggered elsewhere
+         */
+        updateFields: function (fields, suspendLoad) {
+            this._fields = fields;
+
+            this.cmp.fireEvent('fieldsupdated', fields);
+            this._updatePickerValue(fields);
+        },
+
+        _updatePickerValue: function(fields) {
+            if (this.popover && this.popover.down('rallyfieldpicker')) {
+                this.popover.down('rallyfieldpicker').setValue(this._fields.join(','));
+            }
+        },
+
+        _onApply: function(popover) {
+            var fieldPicker = popover.down('rallyfieldpicker'),
+                fields = _.map(fieldPicker.getValue(), function (field) {
+                    return field.get('name');
+                });
+
+            this.updateFields(fields);
+
+            popover.close();
+        }
+    });
+})();
+(function() {
+    var Ext = window.Ext4 || window.Ext;
+
+    Ext.define('Rally.ui.combobox.HiddenDateFieldComboBox', {
+        requires: [],
+        extend: 'Rally.ui.combobox.FieldComboBox',
+        alias: 'widget.tshiddendatefieldcombobox',
+        config: {
+            /**
+             * @cfg {Boolean}
+             * If true, creates a '-- No Entry --' option in the combobox, with a value of null.
+             */
+            allowNoEntry: true,
+
+            /**
+             * @cfg {String}
+             * Text to use for the '-- No Entry --' option.
+             */
+            noEntryText: '-- No Entry --',
+
+            /**
+             * @cfg {String}
+             * Value to use for the '-- No Entry --' option.
+             */
+            noEntryValue: null,
+
+            /**
+             * @cfg {Boolean}
+             * If true, creates a '-- Clear --' option in the combobox, with a value of ''.
+             * Useful if using the combobox as a filter.
+             */
+            allowClear: true,
+
+            /**
+             * @cfg {String}
+             * Text to use for the '-- Clear --' option.
+             */
+            clearText: '-- Clear --'
+        },
+        constructor: function(config){
+            this.mergeConfig(config);
+            this.callParent([this.config]);
+        },
+
+        _isNotHidden: function(field) {
+            //We only want date field types that are writable and also we want to include hidden fields
+            if (!field || (field && !field.readOnly && field.attributeDefinition &&
+                field.attributeDefinition.AttributeType === 'DATE')){
+                return true;
+            }
+            return false;
+
+        }
+    });
+})();
+Ext.define('Rally.ui.menu.bulk.UpdateTransitionDates', {
+    alias: 'widget.rallyrecordmenuitembulkupdatetransitiondates',
+    extend: 'Rally.ui.menu.bulk.MenuItem',
+    requires: ['Rally.ui.notify.Notifier'],
+
+    config: {
+        text: 'Update Transition Dates',
+        stateHash: {
+            "Done": "c_Done"
+        },
+        handler: function() {
+            this._onBulkUpdateClicked();
+        }
+    },
+
+        predicate: function(records) {
+            return _.every(records, function(record) {
+                return record.self.isArtifact() || record.self.isTimebox();
+            });
+        },
+
+        saveRecords: function(records) {
+
+            if (records.length === 0){
+                this._showMessage([],[],'');
+                return;
+            }
+
+            var promises = _.map(records, function(record){
+                return this._saveRecord(record);
+            }, this);
+
+            Deft.Promise.all(promises).then({
+                scope: this,
+                success: function(results){
+                    var errorMessage = null,
+                        successfulRecords = [];
+
+                    _.each(results, function(r){
+                        if (r.result){
+                            successfulRecords.push(r);
+                        } else {
+                            errorMessage = r.errorMessage;
+                        }
+                        this._showMessage(records, successfulRecords, errorMessage);
+                    }, this);
+                }
+            });
+    },
+    _saveRecord: function(record){
+        var deferred = Ext.create('Deft.Deferred');
+
+        record.save({
+            callback: function(result, operation){
+                if (operation.wasSuccessful()){
+                    deferred.resolve({result: result, errorMessage: null});
+                } else {
+                    deferred.resolve({result: null, errorMessage: operation.error.errors.join(',')});
+                }
+            }
+        });
+        return deferred;
+    },
+    _showMessage: function(records, successfulRecords, errorMessage) {
+        var me = this;
+
+        var unsuccessfulRecords = _.difference(records, successfulRecords);
+        if(successfulRecords.length) {
+            me.onSuccess(successfulRecords, unsuccessfulRecords, errorMessage);
+        } else {
+            if (unsuccessfulRecords.length > 0){
+                Rally.ui.notify.Notifier.showError({
+                    message: errorMessage
+                });
+            } else {
+                Rally.ui.notify.Notifier.showWarning({
+                    message: "No state transition data was found or updated for the selected record(s)."
+                });
+            }
+            Ext.callback(me.onActionComplete, null, [successfulRecords, unsuccessfulRecords]);
+        }
+
+    },
+    _onBulkUpdateClicked: function() {
+        if (this.onBeforeAction(this.records) === false) {
+            return;
+        }
+        var me = this;
+        this._fetchTransitionDates(this.records).then({
+            success: function(updatedRecords){
+                me.saveRecords(updatedRecords, me.records);
+            }
+        });
+    },
+    _fetchTransitionDates: function(records){
+        var deferred = Ext.create('Deft.Deferred'),
+            objectIds = _.map(records, function(r){ return r.get('ObjectID'); });
+
+        Ext.create('Rally.data.lookback.SnapshotStore',{
+            fetch: ['ObjectID','State','_ValidFrom','_ValidTo',"_PreviousValues.State"],
+            find: {
+                ObjectID: {$in: objectIds}
+            },
+            hydrate: ['State',"_PreviousValues.State"],
+            removeUnauthorizedSnapshots: true,
+            compress: true,
+            limit: 'Infinity',
+            //sorters: [{
+            //    property: '_ValidFrom',
+            //    direction: 'ASC'
+            //}]
+        }).load({
+            callback: function(snapshots, operation){
+                var snapsByOid = this.aggregateSnapsByOidForModel(snapshots);
+                var updatedRecords = this._updateTransitionFields(records, snapsByOid);
+                deferred.resolve(updatedRecords);
+            },
+            scope: this
+        });
+
+        return deferred;
+    },
+    _updateTransitionFields: function(records, snapsByOid){
+        var stateHash = this.stateDateFields,
+        states = _.map(this.states, function(s){ return s.get('StringValue')}),
+            updatedRecords = [];
+
+        _.each(records, function(r){
+            var snaps = snapsByOid[r.get('ObjectID')] || [],
+                currentState = (r.get('State') && r.get('State').Name) || null,
+                currentIdx = currentState ? _.indexOf(states, currentState) : -1;
+
+                _.each(stateHash, function(field, state){
+                    if (_.indexOf(states, state) <= currentIdx){  //only populate if the current state is greater\equal to the state
+                        _.each(snaps, function(snap){
+
+                            if (snap.State === state && snap["_PreviousValues.State"]!== "" && snap["_PreviousValues.State"] !== state){
+                                var transitionDate = snap._ValidFrom;
+                                r.set(field, transitionDate);
+                                updatedRecords.push(r);
+                            }
+                        });
+                    }
+                });
+        });
+        return updatedRecords;
+    },
+    aggregateSnapsByOidForModel: function(snaps){
+        //Return a hash of objects (key=ObjectID) with all snapshots for the object
+        var snaps_by_oid = {};
+        Ext.each(snaps, function(snap){
+            var oid = snap.ObjectID || snap.get('ObjectID');
+            if (snaps_by_oid[oid] == undefined){
+                snaps_by_oid[oid] = [];
+            }
+            snaps_by_oid[oid].push(snap.getData());
+
+        });
+        return snaps_by_oid;
+    },
+    /**
+     * @override
+     * @inheritdoc
+     */
+    onSuccess: function (successfulRecords, unsuccessfulRecords, errorMessage) {
+        var me = this;
+        var message = successfulRecords.length + (successfulRecords.length === 1 ? ' item has been updated.' : ' items have been updated.');
+
+        if(successfulRecords.length === this.records.length) {
+            Rally.ui.notify.Notifier.show({
+                message: message + '.'
+            });
+        } else {
+            if (errorMessage){
+                errorMessage = " there was an error: " + errorMessage;
+            } else {
+                errorMessage = " there was no transition data for the configured States."
+            }
+            Rally.ui.notify.Notifier.showWarning({
+                message: message + ', and ' + unsuccessfulRecords.length + ' were not updated because ' + errorMessage
+            });
+        }
+        Ext.callback(me.onActionComplete, null, [[], []]);
+       // Ext.callback(me.onActionComplete, null, [successfulRecords, unsuccessfulRecords]);
+    }
+});
+
+Ext.define('Rally.ui.menu.bulk.SetHiddenDate', {
+    alias: 'widget.rallyrecordmenuitembulksethiddendate',
+    extend: 'Rally.ui.menu.bulk.MenuItem',
+    requires: ['Rally.ui.notify.Notifier'],
+
+    config: {
+        text: 'Set Planned Date...',
+        handler: function() {
+            this._onBulkSetHiddenDateClicked();
+        },
+        predicate: function(records) {
+            return _.every(records, function(record) {
+                return record.self.isArtifact() || record.self.isTimebox();
+            });
+        },
+
+        saveRecords: function(records, args) {
+
+            var promises = _.map(records, function(record){
+                return this._saveRecord(record, args);
+            }, this);
+
+            Deft.Promise.all(promises).then({
+                scope: this,
+                success: function(results){
+                    var successfulRecords = [],
+                        unsuccessfulRecords = [],
+                        errorMessage= '';
+
+                    _.each(results, function(r){
+                        if (r.successfulRecord){
+                            successfulRecords.push(r.successfulRecord);
+                        } else {
+                            unsuccessfulRecords.push(r.unsuccessfulRecord);
+                            errorMessage = r.operation && r.operation.error && r.operation.error.errors.join(',') || "Error updating record " + r.unsuccessfulRecord.get('FormattedID');
+                        }
+
+                    });
+                    this.onSuccess(successfulRecords, unsuccessfulRecords, args, errorMessage);
+                }
+            });
+
+
+        }
+    },
+    _saveRecord: function(record, args){
+        var deferred = Ext.create('Deft.Deferred');
+
+        record.set(args.field.name, args.value);
+
+        record.save({
+            callback: function(result, operation){
+                if (operation.wasSuccessful()){
+                    deferred.resolve({successfulRecord: record, unsuccessfulRecord: null});
+                } else {
+                    deferred.resolve({successfulRecord: null, unsuccessfulRecord: record, operation: operation});
+                }
+            }
+        });
+        return deferred;
+    },
+    _onBulkSetHiddenDateClicked: function() {
+        Ext.create('Rally.technicalservices.dialog.SetDateDialog', {
+            records: this.records,
+            dateField: this.dateField,
+            listeners: {
+                edit: this._onEdit,
+                scope: this
+            }
+        });
+    },
+
+    _onEdit: function(dialog, args) {
+        if (this.onBeforeAction(this.records) === false) {
+            return;
+        }
+        this.saveRecords(this.records, args);
+    },
+
+    /**
+     * @override
+     * @inheritdoc
+     */
+    onSuccess: function (successfulRecords, unsuccessfulRecords, args, errorMessage) {
+
+        var message = successfulRecords.length + (successfulRecords.length === 1 ? ' item has' : ' items have');
+
+
+            message += ' had ' + args.displayName;
+            if (args.value === null || args.value === '') {
+                message += ' removed';
+            } else {
+                message += ' changed to "' + (args.displayValue || args.value) + '"';
+            }
+
+        if(successfulRecords.length === this.records.length) {
+            Rally.ui.notify.Notifier.show({
+                message: message + '.'
+            });
+        } else {
+            Rally.ui.notify.Notifier.showWarning({
+                message: message + ', but ' + unsuccessfulRecords.length + ' failed: ' + errorMessage
+            });
+        }
+
+        var changes = {};
+        changes[args.field.name] = args.value;
+        Ext.callback(this.onActionComplete, null, [successfulRecords, unsuccessfulRecords, changes]);
+    }
+});
+    Ext.define('Rally.technicalservices.dialog.SetDateDialog', {
+        extend: 'Rally.ui.dialog.Dialog',
+        alias: 'widget.tssetdatedialog',
+
+        autoShow: true,
+        cls: 'bulk-edit-dialog',
+        closable: true,
+        draggable: true,
+        title: 'Set Planned Date',
+        width: 375,
+
+        config: {
+            /**
+             * @cfg {[Rally.data.Model]} records (required)
+             * The records to bulk edit
+             */
+            records: null
+        },
+
+        initComponent: function() {
+            this.callParent(arguments);
+
+            this.addEvents(
+                /**
+                 * @param Rally.ui.dialog.BulkEditDialog the dialog
+                 * @param Rally.data.wsapi.Field field the field being edited
+                 * @param {String|Number} the new value
+                 */
+                'edit'
+            );
+
+            this.add(
+                {
+                    xtype: 'component',
+                    cls: 'directions rui-info-label',
+                    renderTpl: Ext.create('Ext.XTemplate',
+                        'For the <tpl><b>{[values.recordCount]}</b></tpl> checked ',
+                        '<tpl if="recordCount === 1">item<tpl else>items</tpl> apply the following dates:'
+                    ),
+                    renderData: {
+                        recordCount: this.records.length
+                    }
+                },
+                {
+                    xtype: 'container',
+                    itemId: 'form-container',
+                    cls: 'form-container',
+                    items: [
+                        {
+                            xtype: 'rallydatefield',
+                            autoExpand: true,
+                            itemId: 'dateField',
+                            defaultSelectionPosition: null,
+                            emptyText: 'Select date...',
+                            listeners: {
+                                select: function(cmp) {
+                                    this.down('#applyButton').setDisabled(false);
+                                },
+                                scope: this
+                            }
+                        }
+                    ]
+                }
+            );
+
+            this.addDocked({
+                xtype: 'toolbar',
+                dock: 'bottom',
+                padding: '0 0 10 0',
+                layout: {
+                    type: 'hbox',
+                    pack: 'center'
+                },
+                ui: 'footer',
+                items: [
+                    {
+                        xtype: 'rallybutton',
+                        itemId: 'applyButton',
+                        text: 'Apply',
+                        cls: 'primary rly-small',
+                        disabled: true,
+                        handler:  this._onApplyClicked,
+                        scope: this
+                    },
+                    {
+                        xtype: 'rallybutton',
+                        text: 'Cancel',
+                        cls: 'secondary rly-small',
+                        handler: function() {
+                            this.close();
+                        },
+                        scope: this
+                    }
+                ]
+            });
+        },
+
+        afterRender: function() {
+            this.callParent(arguments);
+            this.down('#dateField').focus(false, 150);
+        },
+
+        _onApplyClicked: function() {
+            var val = Rally.util.DateTime.toIsoString(this.down('#dateField').getValue());
+            var args = {
+                field: this.dateField,
+                displayName: this.dateField.displayName,
+                value: val
+            };
+            this.fireEvent('edit', this, args);
+            this.close();
+        }
+    });
+
+Ext.define('Rally.technicalservices.settings.StateFieldMapping',{
+    extend: 'Ext.form.field.Base',
+    alias: 'widget.tsstatefieldmappingsettings',
+    config: {
+        value: undefined,
+        states: undefined,
+        model: undefined,
+        decodedValue: {}
+    },
+    fieldSubTpl: '<div id="{id}" class="settings-grid"></div>',
+
+    width: 400,
+    cls: 'column-settings',
+
+    onDestroy: function() {
+        if (this._grid) {
+            this._grid.destroy();
+            delete this._grid;
+        }
+        this.callParent(arguments);
+    },
+
+    onRender: function() {
+        var decodedValue = {};
+        if (this.value && !_.isEmpty(this.value)){
+            decodedValue = Ext.JSON.decode(this.value);
+        }
+        this.callParent(arguments);
+
+        var data = [];
+
+        _.each(this.states, function(s){
+            var field = null,
+                stateName = s.get('StringValue');
+
+            if (stateName && stateName.length > 0){
+                if (decodedValue[stateName]){
+                    field = decodedValue[stateName];
+                }
+                data.push({state: stateName, field: field});
+            }
+        }, this);
+
+        this._store = Ext.create('Ext.data.Store', {
+            fields: ['state', 'field'],
+            data: data
+        });
+
+        this._grid = Ext.create('Rally.ui.grid.Grid', {
+            autoWidth: true,
+            renderTo: this.inputEl,
+            columnCfgs: this._getColumnCfgs(),
+            showPagingToolbar: false,
+            showRowActionsColumn: false,
+            store: this._store,
+            width: this.getWidth() * 0.90,
+            editingConfig: {
+                publishMessages: false
+            }
+        });
+        this.fireEvent('ready');
+    },
+    _getColumnCfgs: function() {
+         var columns = [
+            {
+                text: 'State',
+                dataIndex: 'state',
+                flex: 1
+            },
+            {
+                text: 'Transition Date Field',
+                dataIndex: 'field',
+                flex: 1,
+                editor: {
+                    xtype: 'tshiddendatefieldcombobox',
+                    model: this.model
+                }
+            }];
+        return columns;
+    },
+    /**
+     * When a form asks for the data this field represents,
+     * give it the name of this field and the ref of the selected project (or an empty string).
+     * Used when persisting the value of this field.
+     * @return {Object}
+     */
+    getSubmitData: function() {
+        var data = {};
+        data[this.name] = Ext.JSON.encode(this._buildSettingValue());
+        return data;
+    },
+    _buildSettingValue: function() {
+        var mappings = {};
+        this._store.each(function(record) {
+            if (record.get('state') && record.get('field')) {
+                mappings[record.get('state')] = record.get('field');
+            }
+        }, this);
+        return mappings;
+    },
+
+    getErrors: function() {
+        var errors = [];
+        //todo validate they aren't using the same field for multiple states
+        return errors;
+    },
+    validate : function() {
+        var me = this,
+            isValid = me.isValid();
+        if (isValid !== me.wasValid) {
+            me.wasValid = isValid;
+            me.fireEvent('validitychange', me, isValid);
+        }
+        if (!isValid){
+            var html = this.getErrors().join('<br/>');
+            Ext.create('Rally.ui.tooltip.ToolTip', {
+                target : this.getEl(),
+                html: '<div class="tsinvalid">' + html + '</div>',
+                autoShow: true,
+                anchor: 'bottom',
+                destroyAfterHide: true
+            });
+
+        }
+
+        return isValid;
+    },
+    setValue: function(value) {
+        this.callParent(arguments);
+        this._value = value;
+    }
+});
+Ext.define('Rally.technicalservices.Settings',{
+    singleton: true,
+
+    getFields: function(modelName, states){
+        var labelWidth = 150;
+
+        return [{
+            xtype: 'tshiddendatefieldcombobox',
+            name: 'hiddenStartDateField',
+            model: modelName,
+            labelWidth: labelWidth,
+            labelAlign: 'right',
+            fieldLabel: 'Set Start Date Field',
+            readyEvent: 'ready'
+        },{
+            xtype: 'tsstatefieldmappingsettings',
+            states: states,
+            model: modelName,
+            name: 'stateDateFields',
+            readyEvent: 'ready',
+            fieldLabel: 'State Transition Date Field Mapping',
+            margin: 15,
+            labelAlign: 'top'
+        }];
+    }
+});
+
+            
+               Rally.launchApp('feature-hidden-field-updater', {
+                   name: 'Feature Hidden Field Updater'
+               });
+        });
+    </script>
+    
+    <style type="text/css">
+
+.app {
+}
+.tsinfolink {
+    position:absolute;
+    right:0px;
+    width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    text-align: center;
+    color: white;
+    background: #C0C0C0;
+    border-style: solid;
+    border-width: 1px;
+    margin-top: 25px;
+    margin-right: 5px;
+    cursor: pointer;
+}
+    </style>
+
+</head>
+<body></body>
+</html>
